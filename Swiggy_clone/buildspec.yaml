@@ -6,58 +6,65 @@ env:
     DOCKER_REGISTRY_PASSWORD: /cicd/docker-credentials/password
     DOCKER_REGISTRY_URL: /cicd/docker-registry/url
     SONAR_TOKEN: /cicd/sonar/sonar-token
+
 phases:
+
   install:
     runtime-versions:
-      python: 3.11
       java: corretto17
+      python: 3.11
+    commands:
+      - echo "Installing required tools..."
+
+      - echo "Installing Trivy..."
+      - TRIVY_VERSION=0.56.2
+      - wget -q https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz
+      - tar -xzf trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz
+      - mv trivy /usr/local/bin/trivy
+      - trivy --version
+
   pre_build:
     commands:
-      - echo "Installing dependencies..."
-      - echo "Performing Trivy file scan before building the image..."
-      # - wget https://github.com/aquasecurity/trivy/releases/download/v0.19.2/trivy_0.19.2_Linux-64bit.tar.gz
-      # - tar zxvf trivy_0.19.2_Linux-64bit.tar.gz
-      # - export PATH=$PATH:$PWD
-      # - trivy filesystem --exit-code 0 --no-progress . >> trivyfilescan.txt
-      # - echo "Downloading and installing OWASP Dependency-Check..."
-      # - wget https://github.com/jeremylong/DependencyCheck/releases/download/v7.0.2/dependency-check-7.0.2-release.zip
-      # - unzip dependency-check-7.0.2-release.zip
-      # - export SONAR_SCANNER_VERSION=4.7.0.2747
-      # - export SONAR_SCANNER_HOME=$HOME/.sonar/sonar-scanner-$SONAR_SCANNER_VERSION-linux
-      # - curl --create-dirs -sSLo $HOME/.sonar/sonar-scanner.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-$SONAR_SCANNER_VERSION-linux.zip
-      # - unzip -o $HOME/.sonar/sonar-scanner.zip -d $HOME/.sonar/
-      # - export PATH=$SONAR_SCANNER_HOME/bin:$PATH
-      # - export SONAR_SCANNER_OPTS="-server"
+      - echo "Logging in to Docker Hub..."
+      - echo "$DOCKER_REGISTRY_PASSWORD" | docker login -u "$DOCKER_REGISTRY_USERNAME" --password-stdin "$DOCKER_REGISTRY_URL"
+
+      - echo "Preparing Docker image tag..."
+      - export IMAGE_TAG="$CODEBUILD_BUILD_NUMBER"
+      - export IMAGE_NAME="$DOCKER_REGISTRY_USERNAME/swiggy-clone:$IMAGE_TAG"
+
+      - echo "Image to build:"
+      - echo "$IMAGE_NAME"
 
   build:
     commands:
-      - echo "Running tests..."
+      - echo "Build started on $(date)"
+      
       - echo "Building Docker image..."
-      - echo "$DOCKER_REGISTRY_PASSWORD" | docker login -u "$DOCKER_REGISTRY_USERNAME" --password-stdin "$DOCKER_REGISTRY_URL"
-      - docker build -t "$DOCKER_REGISTRY_USERNAME/swiggy:$CODEBUILD_BUILD_ID" .
-      - echo "Performing Trivy image scan..."
-      - trivy image --exit-code 1 --severity HIGH,CRITICAL "$DOCKER_REGISTRY_USERNAME/swiggy:$CODEBUILD_BUILD_ID"
-      - docker push "$DOCKER_REGISTRY_USERNAME/swiggy:$CODEBUILD_BUILD_ID"
-  #     # - echo "Running OWASP Dependency-Check scan..."
-  #     # - cd dependency-check/bin
-  #     # - ./dependency-check.sh --scan . --format ALL
-  #     # - echo "Build completed successfully!"
-  #     # - echo "Running SonarQube analysis result"
-  #     # - sonar-scanner -Dsonar.projectKey=swiggy -Dsonar.sources=. -Dsonar.host.url=http://65.1.1.149:9000/
-  #     #- aws ses send-email --from "madithati123@gmail.com" --to "madithatisreedhar123@gmail.com" --subject "CodeBuild Status: $CODEBUILD_BUILD_ID" --text "Build status: $CODEBUILD_BUILD_STATUS" --region "ap-south-1" 
-  #     # Update with your preferred AWS region
+      - docker build -t "$IMAGE_NAME" .
+
+      - echo "Running Trivy security scan..."
+      - trivy image --exit-code 1 --severity HIGH,CRITICAL --no-progress "$IMAGE_NAME"
+
+      - echo "Trivy scan passed."
+      - echo "Pushing Docker image to Docker Hub..."
+      - docker push "$IMAGE_NAME"
+
+      - echo "Saving image tag for CodeDeploy..."
+      - echo "$IMAGE_TAG" > image_tag.txt
 
   post_build:
     commands:
-      - |
-        aws ses send-email \
-          --from "${CODEBUILD_NOTIFICATION_FROM:-madithati123@gmail.com}" \
-          --to "${CODEBUILD_NOTIFICATION_TO:-madithati123@gmail.com}" \
-          --subject "CodeBuild Status: $CODEBUILD_BUILD_ID" \
-          --text "Build status: $CODEBUILD_BUILD_STATUS" \
-          --region "${AWS_REGION:-us-east-1}"
-
+      - echo "Build completed on $(date)"
+      - echo "Docker image:"
+      - echo "$IMAGE_NAME"
+      - echo "Image tag:"
+      - cat image_tag.txt
 
 artifacts:
   files:
-    - appspec.yaml
+    - appspec.yml
+    - image_tag.txt
+    - scripts/**/*
+    - Dockerfile
+    - '**/*'
+  discard-paths: no
